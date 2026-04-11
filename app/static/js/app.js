@@ -18,6 +18,8 @@ const App = {
         '/banking':   { page: 'banking',   label: 'Bank Accounts',    render: () => BankingPage.render() },
         '/accounts':  { page: 'accounts',  label: 'Chart of Accounts',render: () => App.renderAccounts() },
         '/reports':   { page: 'reports',   label: 'Report Center',    render: () => ReportsPage.render() },
+        '/settings':  { page: 'settings', label: 'Company Settings', render: () => SettingsPage.render() },
+        '/quick-entry': { page: 'quick-entry', label: 'Quick Entry', render: () => App.renderQuickEntry() },
     },
 
     async navigate(hash) {
@@ -224,12 +226,244 @@ const App = {
         } catch (err) { toast(err.message, 'error'); }
     },
 
+    // Global search — CQBSearchEngine @ 0x00250000
+    _searchTimeout: null,
+    async globalSearch(query) {
+        const dropdown = $('#search-results');
+        if (!dropdown) return;
+        clearTimeout(App._searchTimeout);
+        if (!query || query.length < 2) { dropdown.classList.add('hidden'); return; }
+        App._searchTimeout = setTimeout(async () => {
+            try {
+                const [customers, invoices] = await Promise.all([
+                    API.get(`/customers?search=${encodeURIComponent(query)}`),
+                    API.get('/invoices'),
+                ]);
+                const matchedInv = invoices.filter(i =>
+                    (i.invoice_number || '').toLowerCase().includes(query.toLowerCase()) ||
+                    (i.customer_name || '').toLowerCase().includes(query.toLowerCase())
+                ).slice(0, 5);
+                const matchedCust = customers.slice(0, 5);
+                let html = '';
+                if (matchedCust.length) {
+                    html += `<div class="search-section">Customers</div>`;
+                    matchedCust.forEach(c => {
+                        html += `<div class="search-item" onclick="App.navigate('#/customers');closeSearchDropdown();">${escapeHtml(c.name)}</div>`;
+                    });
+                }
+                if (matchedInv.length) {
+                    html += `<div class="search-section">Invoices</div>`;
+                    matchedInv.forEach(i => {
+                        html += `<div class="search-item" onclick="InvoicesPage.view(${i.id});closeSearchDropdown();">#${escapeHtml(i.invoice_number)} — ${escapeHtml(i.customer_name || '')}</div>`;
+                    });
+                }
+                if (!html) html = `<div class="search-item" style="color:var(--text-muted);">No results</div>`;
+                dropdown.innerHTML = html;
+                dropdown.classList.remove('hidden');
+            } catch (e) { dropdown.classList.add('hidden'); }
+        }, 300);
+    },
+
+    // Quick Entry mode — batch invoice entry for paper invoice backlog
+    async renderQuickEntry() {
+        const [customers, items] = await Promise.all([
+            API.get('/customers?active_only=true'),
+            API.get('/items?active_only=true'),
+        ]);
+        App._qeCustomers = customers;
+        App._qeItems = items;
+        const custOpts = customers.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+        const itemOpts = items.map(i => `<option value="${i.id}">${escapeHtml(i.name)}</option>`).join('');
+
+        return `
+            <div class="page-header">
+                <h2>Quick Entry Mode</h2>
+                <div style="font-size:10px; color:var(--text-muted);">
+                    Batch invoice entry — for entering paper invoices quickly
+                </div>
+            </div>
+            <div class="quick-entry-info" style="background:var(--primary-light); padding:8px 12px; margin-bottom:12px; border:1px solid var(--qb-gold); font-size:11px;">
+                Enter invoice details and press <strong>Save & Next</strong> (or Ctrl+Enter) to save and immediately start a new invoice.
+            </div>
+            <form id="qe-form" onsubmit="App.saveQuickEntry(event)">
+                <div class="form-grid">
+                    <div class="form-group"><label>Customer *</label>
+                        <select name="customer_id" id="qe-customer" required><option value="">Select...</option>${custOpts}</select></div>
+                    <div class="form-group"><label>Date *</label>
+                        <input name="date" id="qe-date" type="date" required value="${todayISO()}"></div>
+                    <div class="form-group"><label>Terms</label>
+                        <select name="terms" id="qe-terms">
+                            ${['Net 15','Net 30','Net 45','Net 60','Due on Receipt'].map(t =>
+                                `<option ${t==='Net 30'?'selected':''}>${t}</option>`).join('')}
+                        </select></div>
+                    <div class="form-group"><label>PO #</label>
+                        <input name="po_number" id="qe-po"></div>
+                </div>
+                <h3 style="margin:12px 0 8px; font-size:14px;">Line Items</h3>
+                <table class="line-items-table">
+                    <thead><tr><th>Item</th><th>Description</th><th class="col-qty">Qty</th><th class="col-rate">Rate</th><th class="col-amount">Amount</th></tr></thead>
+                    <tbody id="qe-lines">
+                        <tr data-qeline="0">
+                            <td><select class="line-item" onchange="App.qeItemSelected(0)"><option value="">--</option>${itemOpts}</select></td>
+                            <td><input class="line-desc" value=""></td>
+                            <td><input class="line-qty" type="number" step="0.01" value="1" oninput="App.qeRecalc()"></td>
+                            <td><input class="line-rate" type="number" step="0.01" value="0" oninput="App.qeRecalc()"></td>
+                            <td class="col-amount line-amount">$0.00</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <button type="button" class="btn btn-sm btn-secondary" style="margin-top:8px;" onclick="App.qeAddLine()">+ Add Line</button>
+                <div style="margin-top:12px; display:flex; justify-content:space-between; align-items:center;">
+                    <div id="qe-total" style="font-size:16px; font-weight:700; color:var(--qb-navy);">Total: $0.00</div>
+                    <div class="form-actions" style="margin:0;">
+                        <button type="submit" class="btn btn-primary">Save & Next (Ctrl+Enter)</button>
+                    </div>
+                </div>
+            </form>
+            <div id="qe-log" style="margin-top:16px;"></div>`;
+    },
+
+    _qeLineCount: 1,
+    qeAddLine() {
+        const idx = App._qeLineCount++;
+        const itemOpts = App._qeItems.map(i => `<option value="${i.id}">${escapeHtml(i.name)}</option>`).join('');
+        $('#qe-lines').insertAdjacentHTML('beforeend', `
+            <tr data-qeline="${idx}">
+                <td><select class="line-item" onchange="App.qeItemSelected(${idx})"><option value="">--</option>${itemOpts}</select></td>
+                <td><input class="line-desc" value=""></td>
+                <td><input class="line-qty" type="number" step="0.01" value="1" oninput="App.qeRecalc()"></td>
+                <td><input class="line-rate" type="number" step="0.01" value="0" oninput="App.qeRecalc()"></td>
+                <td class="col-amount line-amount">$0.00</td>
+            </tr>`);
+    },
+
+    qeItemSelected(idx) {
+        const row = $(`[data-qeline="${idx}"]`);
+        const itemId = row.querySelector('.line-item').value;
+        const item = App._qeItems.find(i => i.id == itemId);
+        if (item) {
+            row.querySelector('.line-desc').value = item.description || item.name;
+            row.querySelector('.line-rate').value = item.rate;
+            App.qeRecalc();
+        }
+    },
+
+    qeRecalc() {
+        let total = 0;
+        $$('#qe-lines tr').forEach(row => {
+            const qty = parseFloat(row.querySelector('.line-qty')?.value) || 0;
+            const rate = parseFloat(row.querySelector('.line-rate')?.value) || 0;
+            const amt = qty * rate;
+            total += amt;
+            const cell = row.querySelector('.line-amount');
+            if (cell) cell.textContent = formatCurrency(amt);
+        });
+        const el = $('#qe-total');
+        if (el) el.textContent = `Total: ${formatCurrency(total)}`;
+    },
+
+    async saveQuickEntry(e) {
+        e.preventDefault();
+        const form = e.target;
+        const lines = [];
+        $$('#qe-lines tr').forEach((row, i) => {
+            const item_id = row.querySelector('.line-item')?.value;
+            const qty = parseFloat(row.querySelector('.line-qty')?.value) || 1;
+            const rate = parseFloat(row.querySelector('.line-rate')?.value) || 0;
+            if (rate > 0 || row.querySelector('.line-desc')?.value) {
+                lines.push({
+                    item_id: item_id ? parseInt(item_id) : null,
+                    description: row.querySelector('.line-desc')?.value || '',
+                    quantity: qty, rate: rate, line_order: i,
+                });
+            }
+        });
+        if (lines.length === 0) { toast('Add at least one line item', 'error'); return; }
+        const data = {
+            customer_id: parseInt(form.customer_id.value),
+            date: form.date.value,
+            terms: form.terms.value,
+            po_number: form.po_number.value || null,
+            tax_rate: 0,
+            notes: null,
+            lines,
+        };
+        try {
+            const inv = await API.post('/invoices', data);
+            const log = $('#qe-log');
+            log.insertAdjacentHTML('afterbegin',
+                `<div style="padding:4px 0; font-size:11px; border-bottom:1px solid var(--gray-200);">
+                    <strong>#${escapeHtml(inv.invoice_number)}</strong> created — ${escapeHtml(inv.customer_name || '')} — ${formatCurrency(inv.total)}
+                </div>`);
+            toast(`Invoice #${inv.invoice_number} created`);
+            // Reset form for next entry
+            form.po_number.value = '';
+            $('#qe-lines').innerHTML = `
+                <tr data-qeline="0">
+                    <td><select class="line-item" onchange="App.qeItemSelected(0)"><option value="">--</option>${App._qeItems.map(i => `<option value="${i.id}">${escapeHtml(i.name)}</option>`).join('')}</select></td>
+                    <td><input class="line-desc" value=""></td>
+                    <td><input class="line-qty" type="number" step="0.01" value="1" oninput="App.qeRecalc()"></td>
+                    <td><input class="line-rate" type="number" step="0.01" value="0" oninput="App.qeRecalc()"></td>
+                    <td class="col-amount line-amount">$0.00</td>
+                </tr>`;
+            App._qeLineCount = 1;
+            App.qeRecalc();
+            form.customer_id.focus();
+        } catch (err) { toast(err.message, 'error'); }
+    },
+
+    // Load company name from settings for status bar
+    async loadCompanyName() {
+        try {
+            const s = await API.get('/settings');
+            const companyEl = $('#status-company');
+            if (companyEl && s.company_name && s.company_name !== 'My Company') {
+                companyEl.textContent = `Company: ${s.company_name}`;
+            }
+        } catch (e) { /* ignore on load */ }
+    },
+
     init() {
         window.addEventListener('hashchange', () => App.navigate(location.hash));
+
+        // Keyboard shortcuts — CAcceleratorTable @ 0x00042800
+        document.addEventListener('keydown', (e) => {
+            // Ctrl+Enter: submit quick entry form
+            if (e.ctrlKey && e.key === 'Enter') {
+                const qeForm = $('#qe-form');
+                if (qeForm) { qeForm.requestSubmit(); e.preventDefault(); }
+            }
+            // Alt+N: new invoice
+            if (e.altKey && e.key === 'n') { InvoicesPage.showForm(); e.preventDefault(); }
+            // Alt+P: receive payment
+            if (e.altKey && e.key === 'p') { PaymentsPage.showForm(); e.preventDefault(); }
+            // Alt+Q: quick entry
+            if (e.altKey && e.key === 'q') { App.navigate('#/quick-entry'); e.preventDefault(); }
+            // Alt+H: home/dashboard
+            if (e.altKey && e.key === 'h') { App.navigate('#/'); e.preventDefault(); }
+            // Escape: close modal
+            if (e.key === 'Escape') { closeModal(); }
+            // Ctrl+K or /: focus search (when not in an input)
+            if ((e.ctrlKey && e.key === 'k') || (e.key === '/' && !e.target.closest('input,textarea,select'))) {
+                const search = $('#global-search');
+                if (search) { search.focus(); e.preventDefault(); }
+            }
+        });
+
+        // Close search dropdown on click outside
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('#global-search') && !e.target.closest('#search-results')) {
+                const dd = $('#search-results');
+                if (dd) dd.classList.add('hidden');
+            }
+        });
 
         // Start clock — CMainFrame::OnTimer() at 1-second interval (WM_TIMER id=1)
         App.updateClock();
         setInterval(App.updateClock, 60000);
+
+        // Load company name into status bar
+        App.loadCompanyName();
 
         // Navigate after splash closes
         App.navigate(location.hash || '#/');

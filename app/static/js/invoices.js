@@ -89,6 +89,9 @@ const InvoicesPage = {
             </div>
             ${inv.notes ? `<p style="margin-top:12px;color:var(--gray-500);">${escapeHtml(inv.notes)}</p>` : ''}
             <div class="form-actions">
+                <button class="btn btn-secondary" onclick="window.open('/api/invoices/${inv.id}/pdf','_blank')">Print / PDF</button>
+                <button class="btn btn-secondary" onclick="InvoicesPage.duplicate(${inv.id})">Duplicate</button>
+                ${inv.status === 'draft' ? `<button class="btn btn-primary" onclick="InvoicesPage.markSent(${inv.id})">Mark Sent</button>` : ''}
                 ${inv.status !== 'void' ? `<button class="btn btn-danger" onclick="InvoicesPage.void(${inv.id})">Void Invoice</button>` : ''}
                 <button class="btn btn-secondary" onclick="closeModal()">Close</button>
             </div>`);
@@ -101,6 +104,24 @@ const InvoicesPage = {
             toast('Invoice voided');
             closeModal();
             App.navigate(location.hash);
+        } catch (err) { toast(err.message, 'error'); }
+    },
+
+    async markSent(id) {
+        try {
+            await API.post(`/invoices/${id}/send`);
+            toast('Invoice marked as sent');
+            closeModal();
+            App.navigate(location.hash);
+        } catch (err) { toast(err.message, 'error'); }
+    },
+
+    async duplicate(id) {
+        try {
+            const inv = await API.post(`/invoices/${id}/duplicate`);
+            toast(`Duplicated as Invoice #${inv.invoice_number}`);
+            closeModal();
+            App.navigate('#/invoices');
         } catch (err) { toast(err.message, 'error'); }
     },
 

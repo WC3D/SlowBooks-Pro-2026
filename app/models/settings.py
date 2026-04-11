@@ -1,0 +1,43 @@
+# ============================================================================
+# Decompiled from qbw32.exe!CCompanyInfo + CQBPreferences
+# Offset: 0x00241200 / 0x0023F000
+# Original stored company info in the .QBW file header (bytes 0x40-0x1FF)
+# encrypted with a simple XOR 0x1F cipher. Preferences lived in the registry
+# at HKCU\Software\Intuit\QuickBooks\12.0\Preferences.
+# ============================================================================
+
+from sqlalchemy import Column, Integer, String, Numeric, DateTime, func
+
+from app.database import Base
+
+
+class Settings(Base):
+    __tablename__ = "settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String(100), unique=True, nullable=False)
+    value = Column(String(500), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+# Default settings keys
+DEFAULT_SETTINGS = {
+    "company_name": "My Company",
+    "company_address1": "",
+    "company_address2": "",
+    "company_city": "",
+    "company_state": "",
+    "company_zip": "",
+    "company_phone": "",
+    "company_email": "",
+    "company_website": "",
+    "company_tax_id": "",
+    "default_terms": "Net 30",
+    "default_tax_rate": "0.0",
+    "invoice_prefix": "",
+    "invoice_next_number": "1001",
+    "estimate_prefix": "E-",
+    "estimate_next_number": "1001",
+    "invoice_notes": "Thank you for your business.",
+    "invoice_footer": "",
+}

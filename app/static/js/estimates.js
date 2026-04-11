@@ -32,13 +32,56 @@ const EstimatesPage = {
                     <td>${statusBadge(est.status)}</td>
                     <td class="amount">${formatCurrency(est.total)}</td>
                     <td class="actions">
+                        <button class="btn btn-sm btn-secondary" onclick="EstimatesPage.view(${est.id})">View</button>
                         <button class="btn btn-sm btn-secondary" onclick="EstimatesPage.showForm(${est.id})">Edit</button>
+                        ${est.status !== 'converted' ? `<button class="btn btn-sm btn-primary" onclick="EstimatesPage.convert(${est.id})">Convert</button>` : ''}
                     </td>
                 </tr>`;
             }
             html += `</tbody></table></div>`;
         }
         return html;
+    },
+
+    async view(id) {
+        const est = await API.get(`/estimates/${id}`);
+        let linesHtml = est.lines.map(l =>
+            `<tr><td>${escapeHtml(l.description || '')}</td><td class="amount">${l.quantity}</td>
+             <td class="amount">${formatCurrency(l.rate)}</td><td class="amount">${formatCurrency(l.amount)}</td></tr>`
+        ).join('');
+
+        openModal(`Estimate #${est.estimate_number}`, `
+            <div style="margin-bottom:12px;">
+                <strong>Customer:</strong> ${escapeHtml(est.customer_name || '')}<br>
+                <strong>Date:</strong> ${formatDate(est.date)}<br>
+                ${est.expiration_date ? `<strong>Expires:</strong> ${formatDate(est.expiration_date)}<br>` : ''}
+                <strong>Status:</strong> ${statusBadge(est.status)}
+            </div>
+            <div class="table-container"><table>
+                <thead><tr><th>Description</th><th class="amount">Qty</th><th class="amount">Rate</th><th class="amount">Amount</th></tr></thead>
+                <tbody>${linesHtml}</tbody>
+            </table></div>
+            <div class="invoice-totals">
+                <div class="total-row"><span class="label">Subtotal</span><span class="value">${formatCurrency(est.subtotal)}</span></div>
+                <div class="total-row"><span class="label">Tax</span><span class="value">${formatCurrency(est.tax_amount)}</span></div>
+                <div class="total-row grand-total"><span class="label">Total</span><span class="value">${formatCurrency(est.total)}</span></div>
+            </div>
+            ${est.notes ? `<p style="margin-top:12px;color:var(--gray-500);">${escapeHtml(est.notes)}</p>` : ''}
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="window.open('/api/estimates/${est.id}/pdf','_blank')">Print / PDF</button>
+                ${est.status !== 'converted' ? `<button class="btn btn-primary" onclick="EstimatesPage.convert(${est.id})">Convert to Invoice</button>` : ''}
+                <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+            </div>`);
+    },
+
+    async convert(id) {
+        if (!confirm('Convert this estimate to an invoice?')) return;
+        try {
+            const inv = await API.post(`/estimates/${id}/convert`);
+            toast(`Created Invoice #${inv.invoice_number}`);
+            closeModal();
+            App.navigate('#/invoices');
+        } catch (err) { toast(err.message, 'error'); }
     },
 
     lineCount: 0,

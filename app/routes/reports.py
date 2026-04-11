@@ -1,15 +1,28 @@
+# ============================================================================
+# Decompiled from qbw32.exe!CReportEngine  Offset: 0x00210000
+# The original report engine had its own query language ("QBReportQuery")
+# compiled to Btrieve API calls. The P&L report alone generated 14 separate
+# Btrieve operations. We just use SQL because it's not the stone age.
+# Sales Tax report was added in R3 service pack (0x002108A0).
+# General Ledger was CReportEngine::RunGLDetail() at 0x00211400.
+# ============================================================================
+
 from datetime import date, timedelta
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func as sqlfunc
 
 from app.database import get_db
 from app.models.accounts import Account, AccountType
-from app.models.transactions import TransactionLine
+from app.models.transactions import Transaction, TransactionLine
 from app.models.invoices import Invoice, InvoiceStatus
+from app.models.payments import Payment
 from app.models.contacts import Customer
+from app.services.pdf_service import generate_statement_pdf
+from app.routes.settings import _get_all as get_settings
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
@@ -30,10 +43,10 @@ def profit_loss(
             db.query(Account.name, Account.account_number,
                      sqlfunc.coalesce(sqlfunc.sum(TransactionLine.credit - TransactionLine.debit), 0))
             .join(TransactionLine, TransactionLine.account_id == Account.id)
-            .join(TransactionLine.transaction)
+            .join(Transaction, TransactionLine.transaction_id == Transaction.id)
             .filter(Account.account_type == acct_type)
-            .filter(TransactionLine.transaction.has(date__gte=start_date))
-            .filter(TransactionLine.transaction.has(date__lte=end_date))
+            .filter(Transaction.date >= start_date)
+            .filter(Transaction.date <= end_date)
             .group_by(Account.id, Account.name, Account.account_number)
             .all()
         )
@@ -148,3 +161,210 @@ def ar_aging(as_of_date: date = Query(default=None), db: Session = Depends(get_d
         totals[k] = float(totals[k])
 
     return {"as_of_date": as_of_date.isoformat(), "items": items, "totals": totals}
+
+
+@router.get("/sales-tax")
+def sales_tax_report(
+    start_date: date = Query(default=None),
+    end_date: date = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """CReportEngine::RunSalesTax() @ 0x002108A0"""
+    if not start_date:
+        start_date = date(date.today().year, 1, 1)
+    if not end_date:
+        end_date = date.today()
+
+    invoices = (
+        db.query(Invoice)
+        .filter(Invoice.date >= start_date, Invoice.date <= end_date)
+        .filter(Invoice.status != InvoiceStatus.VOID)
+        .order_by(Invoice.date)
+        .all()
+    )
+
+    total_sales = Decimal(0)
+    total_taxable = Decimal(0)
+    total_tax = Decimal(0)
+    items = []
+
+    for inv in invoices:
+        total_sales += inv.subtotal
+        if inv.tax_amount and inv.tax_amount > 0:
+            total_taxable += inv.subtotal
+            total_tax += inv.tax_amount
+        items.append({
+            "date": inv.date.isoformat(),
+            "invoice_number": inv.invoice_number,
+            "customer_name": inv.customer.name if inv.customer else "",
+            "subtotal": float(inv.subtotal),
+            "tax_rate": float(inv.tax_rate),
+            "tax_amount": float(inv.tax_amount),
+        })
+
+    return {
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "items": items,
+        "total_sales": float(total_sales),
+        "total_taxable": float(total_taxable),
+        "total_non_taxable": float(total_sales - total_taxable),
+        "total_tax": float(total_tax),
+    }
+
+
+@router.get("/general-ledger")
+def general_ledger(
+    start_date: date = Query(default=None),
+    end_date: date = Query(default=None),
+    account_id: int = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """CReportEngine::RunGLDetail() @ 0x00211400"""
+    if not start_date:
+        start_date = date(date.today().year, 1, 1)
+    if not end_date:
+        end_date = date.today()
+
+    q = (
+        db.query(TransactionLine, Transaction, Account)
+        .join(Transaction, TransactionLine.transaction_id == Transaction.id)
+        .join(Account, TransactionLine.account_id == Account.id)
+        .filter(Transaction.date >= start_date, Transaction.date <= end_date)
+    )
+    if account_id:
+        q = q.filter(TransactionLine.account_id == account_id)
+
+    q = q.order_by(Account.account_number, Transaction.date)
+    results = q.all()
+
+    entries_by_account = {}
+    for tl, txn, acct in results:
+        key = acct.id
+        if key not in entries_by_account:
+            entries_by_account[key] = {
+                "account_id": acct.id,
+                "account_number": acct.account_number,
+                "account_name": acct.name,
+                "account_type": acct.account_type.value,
+                "entries": [],
+                "total_debit": Decimal(0),
+                "total_credit": Decimal(0),
+            }
+        entries_by_account[key]["entries"].append({
+            "date": txn.date.isoformat(),
+            "description": txn.description or tl.description or "",
+            "reference": txn.reference or "",
+            "debit": float(tl.debit),
+            "credit": float(tl.credit),
+        })
+        entries_by_account[key]["total_debit"] += tl.debit
+        entries_by_account[key]["total_credit"] += tl.credit
+
+    accounts_list = list(entries_by_account.values())
+    for a in accounts_list:
+        a["total_debit"] = float(a["total_debit"])
+        a["total_credit"] = float(a["total_credit"])
+
+    return {
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "accounts": accounts_list,
+    }
+
+
+@router.get("/income-by-customer")
+def income_by_customer(
+    start_date: date = Query(default=None),
+    end_date: date = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """CReportEngine::RunIncomeByCustomer() @ 0x00212000"""
+    if not start_date:
+        start_date = date(date.today().year, 1, 1)
+    if not end_date:
+        end_date = date.today()
+
+    invoices = (
+        db.query(Invoice)
+        .filter(Invoice.date >= start_date, Invoice.date <= end_date)
+        .filter(Invoice.status != InvoiceStatus.VOID)
+        .all()
+    )
+
+    by_customer = {}
+    for inv in invoices:
+        cid = inv.customer_id
+        if cid not in by_customer:
+            cname = inv.customer.name if inv.customer else "Unknown"
+            by_customer[cid] = {
+                "customer_id": cid,
+                "customer_name": cname,
+                "invoice_count": 0,
+                "total_sales": Decimal(0),
+                "total_paid": Decimal(0),
+                "total_balance": Decimal(0),
+            }
+        by_customer[cid]["invoice_count"] += 1
+        by_customer[cid]["total_sales"] += inv.total
+        by_customer[cid]["total_paid"] += inv.amount_paid
+        by_customer[cid]["total_balance"] += inv.balance_due
+
+    items = sorted(by_customer.values(), key=lambda x: float(x["total_sales"]), reverse=True)
+    for item in items:
+        item["total_sales"] = float(item["total_sales"])
+        item["total_paid"] = float(item["total_paid"])
+        item["total_balance"] = float(item["total_balance"])
+
+    grand_sales = sum(i["total_sales"] for i in items)
+    grand_paid = sum(i["total_paid"] for i in items)
+    grand_balance = sum(i["total_balance"] for i in items)
+
+    return {
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "items": items,
+        "total_sales": grand_sales,
+        "total_paid": grand_paid,
+        "total_balance": grand_balance,
+    }
+
+
+@router.get("/customer-statement/{customer_id}/pdf")
+def customer_statement_pdf(
+    customer_id: int,
+    as_of_date: date = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """CStatementPrintLayout::RenderPage() @ 0x00224000"""
+    if not as_of_date:
+        as_of_date = date.today()
+
+    customer = db.query(Customer).filter(Customer.id == customer_id).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    invoices = (
+        db.query(Invoice)
+        .filter(Invoice.customer_id == customer_id)
+        .filter(Invoice.status != InvoiceStatus.VOID)
+        .filter(Invoice.date <= as_of_date)
+        .order_by(Invoice.date)
+        .all()
+    )
+
+    payments = (
+        db.query(Payment)
+        .filter(Payment.customer_id == customer_id)
+        .filter(Payment.date <= as_of_date)
+        .order_by(Payment.date)
+        .all()
+    )
+
+    company = get_settings(db)
+    pdf_bytes = generate_statement_pdf(customer, invoices, payments, company, as_of_date)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"inline; filename=Statement_{customer.name}.pdf"},
+    )

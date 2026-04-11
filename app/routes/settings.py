@@ -1,0 +1,44 @@
+# ============================================================================
+# Decompiled from qbw32.exe!CPreferencesDialog  Offset: 0x0023F800
+# Original: tabbed dialog (IDD_PREFERENCES) with 12 tabs. We condensed
+# everything into a single key-value store because nobody needs 12 tabs.
+# ============================================================================
+
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.models.settings import Settings, DEFAULT_SETTINGS
+
+router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+
+def _get_all(db: Session) -> dict:
+    rows = db.query(Settings).all()
+    result = dict(DEFAULT_SETTINGS)
+    for row in rows:
+        result[row.key] = row.value
+    return result
+
+
+def _set(db: Session, key: str, value: str):
+    row = db.query(Settings).filter(Settings.key == key).first()
+    if row:
+        row.value = value
+    else:
+        row = Settings(key=key, value=value)
+        db.add(row)
+
+
+@router.get("")
+def get_settings(db: Session = Depends(get_db)):
+    return _get_all(db)
+
+
+@router.put("")
+def update_settings(data: dict, db: Session = Depends(get_db)):
+    for key, value in data.items():
+        if key in DEFAULT_SETTINGS:
+            _set(db, key, str(value) if value is not None else "")
+    db.commit()
+    return _get_all(db)

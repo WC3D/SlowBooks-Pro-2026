@@ -6,6 +6,7 @@ from app.models.invoices import Invoice, InvoiceLine
 from app.models.estimates import Estimate, EstimateLine
 from app.models.payments import Payment, PaymentAllocation
 from app.models.banking import BankAccount, BankTransaction, Reconciliation
+from app.models.settings import Settings
 
 __all__ = [
     "Account", "Customer", "Vendor", "Item",
@@ -14,4 +15,5 @@ __all__ = [
     "Estimate", "EstimateLine",
     "Payment", "PaymentAllocation",
     "BankAccount", "BankTransaction", "Reconciliation",
+    "Settings",
 ]

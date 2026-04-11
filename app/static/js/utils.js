@@ -50,3 +50,10 @@ function escapeHtml(str) {
     if (!str) return '';
     return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+
+function closeSearchDropdown() {
+    const dd = $('#search-results');
+    if (dd) dd.classList.add('hidden');
+    const input = $('#global-search');
+    if (input) input.value = '';
+}

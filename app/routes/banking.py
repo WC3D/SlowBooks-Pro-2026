@@ -1,8 +1,19 @@
+# ============================================================================
+# Decompiled from qbw32.exe!CBankManager + CReconcileEngine
+# Offset: 0x001E7200 (BankAcct) / 0x001F0400 (Reconcile)
+# The reconciliation engine was CReconcileEngine::ComputeDifference() at
+# 0x001F0890. Toggle cleared items, then validate sum matches statement.
+# ============================================================================
+
+from datetime import datetime
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import func as sqlfunc
 
 from app.database import get_db
-from app.models.banking import BankAccount, BankTransaction, Reconciliation
+from app.models.banking import BankAccount, BankTransaction, Reconciliation, ReconciliationStatus
 from app.schemas.banking import (
     BankAccountCreate, BankAccountUpdate, BankAccountResponse,
     BankTransactionCreate, BankTransactionResponse,
@@ -70,7 +81,7 @@ def create_bank_transaction(data: BankTransactionCreate, db: Session = Depends(g
     return txn
 
 
-# Reconciliations — stub for Phase 4
+# Reconciliations — CReconcileEngine @ 0x001F0400
 @router.get("/reconciliations", response_model=list[ReconciliationResponse])
 def list_reconciliations(bank_account_id: int = None, db: Session = Depends(get_db)):
     q = db.query(Reconciliation)
@@ -81,8 +92,101 @@ def list_reconciliations(bank_account_id: int = None, db: Session = Depends(get_
 
 @router.post("/reconciliations", response_model=ReconciliationResponse, status_code=201)
 def create_reconciliation(data: ReconciliationCreate, db: Session = Depends(get_db)):
+    """Start a reconciliation — CReconcileEngine::Begin() @ 0x001F0500"""
+    ba = db.query(BankAccount).filter(BankAccount.id == data.bank_account_id).first()
+    if not ba:
+        raise HTTPException(status_code=404, detail="Bank account not found")
     recon = Reconciliation(**data.model_dump())
     db.add(recon)
     db.commit()
     db.refresh(recon)
     return recon
+
+
+@router.get("/reconciliations/{recon_id}/transactions")
+def get_reconciliation_transactions(recon_id: int, db: Session = Depends(get_db)):
+    """Get unreconciled transactions for this bank account"""
+    recon = db.query(Reconciliation).filter(Reconciliation.id == recon_id).first()
+    if not recon:
+        raise HTTPException(status_code=404, detail="Reconciliation not found")
+
+    txns = (
+        db.query(BankTransaction)
+        .filter(BankTransaction.bank_account_id == recon.bank_account_id)
+        .filter(BankTransaction.date <= recon.statement_date)
+        .order_by(BankTransaction.date)
+        .all()
+    )
+
+    cleared_total = sum(float(t.amount) for t in txns if t.reconciled)
+    uncleared_total = sum(float(t.amount) for t in txns if not t.reconciled)
+    statement_bal = float(recon.statement_balance)
+    difference = statement_bal - cleared_total
+
+    return {
+        "reconciliation_id": recon.id,
+        "statement_balance": statement_bal,
+        "cleared_total": cleared_total,
+        "uncleared_total": uncleared_total,
+        "difference": difference,
+        "transactions": [
+            {
+                "id": t.id,
+                "date": t.date.isoformat(),
+                "payee": t.payee or "",
+                "description": t.description or "",
+                "amount": float(t.amount),
+                "check_number": t.check_number,
+                "reconciled": t.reconciled,
+            }
+            for t in txns
+        ],
+    }
+
+
+@router.post("/reconciliations/{recon_id}/toggle/{txn_id}")
+def toggle_cleared(recon_id: int, txn_id: int, db: Session = Depends(get_db)):
+    """Toggle a transaction's cleared status — CReconcileEngine::ToggleItem()"""
+    recon = db.query(Reconciliation).filter(Reconciliation.id == recon_id).first()
+    if not recon:
+        raise HTTPException(status_code=404, detail="Reconciliation not found")
+    if recon.status == ReconciliationStatus.COMPLETED:
+        raise HTTPException(status_code=400, detail="Reconciliation already completed")
+
+    txn = db.query(BankTransaction).filter(BankTransaction.id == txn_id).first()
+    if not txn:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    txn.reconciled = not txn.reconciled
+    db.commit()
+    return {"id": txn.id, "reconciled": txn.reconciled}
+
+
+@router.post("/reconciliations/{recon_id}/complete")
+def complete_reconciliation(recon_id: int, db: Session = Depends(get_db)):
+    """CReconcileEngine::Finish() @ 0x001F0A00 — validates difference is 0"""
+    recon = db.query(Reconciliation).filter(Reconciliation.id == recon_id).first()
+    if not recon:
+        raise HTTPException(status_code=404, detail="Reconciliation not found")
+    if recon.status == ReconciliationStatus.COMPLETED:
+        raise HTTPException(status_code=400, detail="Already completed")
+
+    txns = (
+        db.query(BankTransaction)
+        .filter(BankTransaction.bank_account_id == recon.bank_account_id)
+        .filter(BankTransaction.date <= recon.statement_date)
+        .filter(BankTransaction.reconciled == True)
+        .all()
+    )
+    cleared_total = sum(t.amount for t in txns)
+
+    if abs(cleared_total - recon.statement_balance) > Decimal("0.01"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Difference is ${float(recon.statement_balance - cleared_total):.2f} — must be $0.00 to complete"
+        )
+
+    recon.status = ReconciliationStatus.COMPLETED
+    recon.completed_at = datetime.utcnow()
+    db.commit()
+    return {"status": "completed", "reconciliation_id": recon.id}

@@ -954,3 +954,94 @@ tr.clickable { cursor: pointer; }
     #content { margin: 0; padding: 0; }
     body { background: white; }
 }
+
+/* ========================================================================
+ * GLOBAL SEARCH — CQBSearchEngine @ 0x00250000
+ * ======================================================================== */
+
+.tb-search {
+    width: 180px;
+    padding: 3px 8px;
+    font-size: 11px;
+    font-family: var(--font);
+    border: 1px solid var(--input-border);
+    background: white;
+    border-radius: 2px;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.08);
+}
+
+.tb-search:focus {
+    outline: none;
+    border-color: var(--input-focus);
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.08), 0 0 0 2px rgba(51,102,204,0.2);
+}
+
+.search-dropdown {
+    position: absolute;
+    top: var(--topbar-height);
+    right: 120px;
+    width: 300px;
+    max-height: 300px;
+    overflow-y: auto;
+    background: white;
+    border: 1px solid var(--panel-border);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    z-index: 200;
+}
+
+.search-section {
+    padding: 4px 10px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: var(--content-bg);
+    border-bottom: 1px solid var(--panel-border);
+}
+
+.search-item {
+    padding: 6px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.search-item:hover {
+    background: var(--primary-light, #e8f0f8);
+}
+
+/* ========================================================================
+ * SETTINGS PAGE — CPreferencesDialog
+ * ======================================================================== */
+
+.settings-section {
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    padding: 16px;
+    margin-bottom: 16px;
+}
+
+.settings-section h3 {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--qb-navy);
+    margin-bottom: 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--panel-border);
+}
+
+/* ========================================================================
+ * QUICK ENTRY — batch invoice entry
+ * ======================================================================== */
+
+.quick-entry-info {
+    font-size: 11px;
+}
+
+#qe-log {
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid var(--panel-border);
+    background: white;
+    padding: 4px 8px;
+}

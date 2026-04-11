@@ -42,8 +42,13 @@
             <button class="tb-btn" onclick="CustomersPage.showForm()">New Customer</button>
             <button class="tb-btn" onclick="InvoicesPage.showForm()">Create Invoice</button>
             <button class="tb-btn" onclick="PaymentsPage.showForm()">Receive Payment</button>
+            <button class="tb-btn" onclick="App.navigate('#/quick-entry')">Quick Entry</button>
             <div class="tb-sep"></div>
             <button class="tb-btn" onclick="App.navigate('#/reports')">Reports</button>
+            <div class="tb-sep"></div>
+            <input type="text" id="global-search" class="tb-search" placeholder="Search customers, invoices..."
+                   oninput="App.globalSearch(this.value)" onkeydown="if(event.key==='Escape')this.value='';App.globalSearch('');">
+            <div id="search-results" class="search-dropdown hidden"></div>
             <div class="topbar-right">
                 <div class="topbar-clock" id="topbar-clock"></div>
                 <button class="tb-btn" onclick="App.showAbout()">About</button>
@@ -86,6 +91,10 @@
                         <span class="nav-icon">&#9776;</span> Chart of Accounts</a></li>
                     <li><a href="#/reports" class="nav-link" data-page="reports">
                         <span class="nav-icon">&#9783;</span> Reports</a></li>
+
+                    <li class="nav-section">System</li>
+                    <li><a href="#/settings" class="nav-link" data-page="settings">
+                        <span class="nav-icon">&#9881;</span> Settings</a></li>
                 </ul>
                 <div class="sidebar-footer">
                     Build 12.0.3190-R<br>
@@ -130,6 +139,7 @@
     <script src="/static/js/payments.js"></script>
     <script src="/static/js/banking.js"></script>
     <script src="/static/js/reports.js"></script>
+    <script src="/static/js/settings.js"></script>
     <script src="/static/js/app.js"></script>
 </body>
 </html>

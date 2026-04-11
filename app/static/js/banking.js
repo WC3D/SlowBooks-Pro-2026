@@ -46,6 +46,7 @@ const BankingPage = {
                 <div class="btn-group">
                     <button class="btn btn-secondary" onclick="App.navigate('#/banking')">Back</button>
                     <button class="btn btn-primary" onclick="BankingPage.showTxnForm(${bankAccountId})">+ Transaction</button>
+                    <button class="btn btn-secondary" onclick="BankingPage.startReconcile(${bankAccountId})">Reconcile</button>
                 </div>
             </div>
             <div class="card" style="margin-bottom:16px;">
@@ -167,6 +168,100 @@ const BankingPage = {
             toast('Transaction saved');
             closeModal();
             BankingPage.viewRegister(bankAccountId);
+        } catch (err) { toast(err.message, 'error'); }
+    },
+
+    // Reconciliation — CReconcileWizard @ 0x001F1200
+    async startReconcile(bankAccountId) {
+        openModal('Begin Reconciliation', `
+            <form onsubmit="BankingPage.createReconciliation(event, ${bankAccountId})">
+                <p style="margin-bottom:12px; font-size:11px; color:var(--gray-500);">
+                    Enter the ending date and balance from your bank statement.
+                </p>
+                <div class="form-grid">
+                    <div class="form-group"><label>Statement Date *</label>
+                        <input name="statement_date" type="date" required value="${todayISO()}"></div>
+                    <div class="form-group"><label>Statement Ending Balance *</label>
+                        <input name="statement_balance" type="number" step="0.01" required></div>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Begin Reconciliation</button>
+                </div>
+            </form>`);
+    },
+
+    async createReconciliation(e, bankAccountId) {
+        e.preventDefault();
+        const form = e.target;
+        try {
+            const recon = await API.post('/banking/reconciliations', {
+                bank_account_id: bankAccountId,
+                statement_date: form.statement_date.value,
+                statement_balance: parseFloat(form.statement_balance.value),
+            });
+            closeModal();
+            BankingPage.showReconcileView(recon.id);
+        } catch (err) { toast(err.message, 'error'); }
+    },
+
+    async showReconcileView(reconId) {
+        const data = await API.get(`/banking/reconciliations/${reconId}/transactions`);
+        let rows = data.transactions.map(t => {
+            const cls = t.reconciled ? 'style="background:var(--primary-light);"' : '';
+            const amtCls = t.amount >= 0 ? 'color:var(--success)' : 'color:var(--danger)';
+            return `<tr ${cls}>
+                <td><input type="checkbox" ${t.reconciled ? 'checked' : ''}
+                    onchange="BankingPage.toggleCleared(${reconId}, ${t.id}, this)"></td>
+                <td>${formatDate(t.date)}</td>
+                <td>${escapeHtml(t.payee || t.description || '')}</td>
+                <td>${escapeHtml(t.check_number || '')}</td>
+                <td class="amount" style="${amtCls}">${formatCurrency(t.amount)}</td>
+            </tr>`;
+        }).join('');
+
+        const diffColor = Math.abs(data.difference) < 0.01 ? 'var(--success)' : 'var(--danger)';
+
+        $('#page-content').innerHTML = `
+            <div class="page-header">
+                <h2>Reconcile Account</h2>
+                <div class="btn-group">
+                    <button class="btn btn-secondary" onclick="App.navigate('#/banking')">Cancel</button>
+                    <button class="btn btn-primary" id="recon-finish-btn" onclick="BankingPage.finishReconcile(${reconId})"
+                        ${Math.abs(data.difference) < 0.01 ? '' : 'disabled'}>Finish Reconciliation</button>
+                </div>
+            </div>
+            <div class="card-grid" style="margin-bottom:16px;">
+                <div class="card"><div class="card-header">Statement Balance</div>
+                    <div class="card-value">${formatCurrency(data.statement_balance)}</div></div>
+                <div class="card"><div class="card-header">Cleared Balance</div>
+                    <div class="card-value" id="recon-cleared">${formatCurrency(data.cleared_total)}</div></div>
+                <div class="card"><div class="card-header">Difference</div>
+                    <div class="card-value" id="recon-diff" style="color:${diffColor}">${formatCurrency(data.difference)}</div></div>
+            </div>
+            <div class="table-container"><table>
+                <thead><tr><th style="width:30px;"></th><th>Date</th><th>Payee / Description</th><th>Check #</th><th class="amount">Amount</th></tr></thead>
+                <tbody>${rows || '<tr><td colspan="5" style="text-align:center;">No transactions</td></tr>'}</tbody>
+            </table></div>`;
+    },
+
+    async toggleCleared(reconId, txnId, checkbox) {
+        try {
+            await API.post(`/banking/reconciliations/${reconId}/toggle/${txnId}`);
+            // Refresh the view to update totals
+            BankingPage.showReconcileView(reconId);
+        } catch (err) {
+            checkbox.checked = !checkbox.checked;
+            toast(err.message, 'error');
+        }
+    },
+
+    async finishReconcile(reconId) {
+        if (!confirm('Mark this reconciliation as complete?')) return;
+        try {
+            await API.post(`/banking/reconciliations/${reconId}/complete`);
+            toast('Reconciliation completed');
+            App.navigate('#/banking');
         } catch (err) { toast(err.message, 'error'); }
     },
 };

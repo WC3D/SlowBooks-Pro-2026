@@ -16,6 +16,9 @@ from app.models.payments import Payment, PaymentAllocation
 from app.models.invoices import Invoice, InvoiceStatus
 from app.models.contacts import Customer
 from app.schemas.payments import PaymentCreate, PaymentResponse
+from app.services.accounting import (
+    create_journal_entry, get_ar_account_id, get_undeposited_funds_id,
+)
 
 router = APIRouter(prefix="/api/payments", tags=["payments"])
 
@@ -94,6 +97,36 @@ def create_payment(data: PaymentCreate, db: Session = Depends(get_db)):
             invoice.status = InvoiceStatus.PAID
         else:
             invoice.status = InvoiceStatus.PARTIAL
+
+    # ================================================================
+    # Journal Entry — CReceivePayment::PostToJournal() @ 0x001A3A00
+    # DR  Bank/Undeposited Funds         payment amount
+    # CR  Accounts Receivable (1100)     payment amount
+    # ================================================================
+    ar_id = get_ar_account_id(db)
+    deposit_id = payment.deposit_to_account_id or get_undeposited_funds_id(db)
+
+    if ar_id and deposit_id:
+        journal_lines = [
+            {
+                "account_id": deposit_id,
+                "debit": Decimal(str(data.amount)),
+                "credit": Decimal("0"),
+                "description": f"Payment from {customer.name}",
+            },
+            {
+                "account_id": ar_id,
+                "debit": Decimal("0"),
+                "credit": Decimal(str(data.amount)),
+                "description": f"Payment from {customer.name}",
+            },
+        ]
+        txn = create_journal_entry(
+            db, data.date, f"Payment from {customer.name}",
+            journal_lines, source_type="payment", source_id=payment.id,
+            reference=data.reference or data.check_number or "",
+        )
+        payment.transaction_id = txn.id
 
     db.commit()
     db.refresh(payment)

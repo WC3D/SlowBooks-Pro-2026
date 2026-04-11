@@ -24,6 +24,22 @@ const ReportsPage = {
                     <div class="card-header">A/R Aging</div>
                     <p style="font-size:13px; color:var(--gray-500);">Outstanding receivables by age</p>
                 </div>
+                <div class="card" style="cursor:pointer" onclick="ReportsPage.salesTax()">
+                    <div class="card-header">Sales Tax</div>
+                    <p style="font-size:13px; color:var(--gray-500);">Tax collected by invoice</p>
+                </div>
+                <div class="card" style="cursor:pointer" onclick="ReportsPage.generalLedger()">
+                    <div class="card-header">General Ledger</div>
+                    <p style="font-size:13px; color:var(--gray-500);">All journal entries by account</p>
+                </div>
+                <div class="card" style="cursor:pointer" onclick="ReportsPage.incomeByCustomer()">
+                    <div class="card-header">Income by Customer</div>
+                    <p style="font-size:13px; color:var(--gray-500);">Sales totals per customer</p>
+                </div>
+                <div class="card" style="cursor:pointer" onclick="ReportsPage.customerStatementPicker()">
+                    <div class="card-header">Customer Statement</div>
+                    <p style="font-size:13px; color:var(--gray-500);">Invoice/payment history PDF</p>
+                </div>
             </div>`;
     },
 
@@ -89,6 +105,134 @@ const ReportsPage = {
                 </tbody>
             </table></div>
             <div class="form-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`);
+    },
+
+    async salesTax() {
+        const thisYear = new Date().getFullYear();
+        const start = `${thisYear}-01-01`;
+        const end = todayISO();
+        const data = await API.get(`/reports/sales-tax?start_date=${start}&end_date=${end}`);
+
+        let rows = data.items.map(i =>
+            `<tr>
+                <td>${formatDate(i.date)}</td>
+                <td>${escapeHtml(i.invoice_number)}</td>
+                <td>${escapeHtml(i.customer_name)}</td>
+                <td class="amount">${formatCurrency(i.subtotal)}</td>
+                <td class="amount">${(i.tax_rate * 100).toFixed(2)}%</td>
+                <td class="amount">${formatCurrency(i.tax_amount)}</td>
+            </tr>`
+        ).join('');
+
+        openModal('Sales Tax Report', `
+            <p style="margin-bottom:12px; color:var(--gray-500);">${formatDate(data.start_date)} &mdash; ${formatDate(data.end_date)}</p>
+            <div class="table-container"><table>
+                <thead><tr><th>Date</th><th>Invoice</th><th>Customer</th><th class="amount">Sales</th><th class="amount">Rate</th><th class="amount">Tax</th></tr></thead>
+                <tbody>${rows || '<tr><td colspan="6" style="text-align:center; color:var(--gray-400);">No taxable sales</td></tr>'}</tbody>
+            </table></div>
+            <div style="margin-top:12px; padding:8px; background:var(--gray-50); border:1px solid var(--gray-200);">
+                <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px;">
+                    <span>Total Sales: <strong>${formatCurrency(data.total_sales)}</strong></span>
+                    <span>Taxable: <strong>${formatCurrency(data.total_taxable)}</strong></span>
+                    <span>Non-Taxable: <strong>${formatCurrency(data.total_non_taxable)}</strong></span>
+                </div>
+                <div style="font-size:14px; font-weight:700; color:var(--qb-navy);">Tax Collected: ${formatCurrency(data.total_tax)}</div>
+            </div>
+            <div class="form-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`);
+    },
+
+    async generalLedger() {
+        const thisYear = new Date().getFullYear();
+        const start = `${thisYear}-01-01`;
+        const end = todayISO();
+        const data = await API.get(`/reports/general-ledger?start_date=${start}&end_date=${end}`);
+
+        let html = `<p style="margin-bottom:12px; color:var(--gray-500);">${formatDate(data.start_date)} &mdash; ${formatDate(data.end_date)}</p>`;
+        if (data.accounts.length === 0) {
+            html += `<div class="empty-state"><p>No journal entries found</p></div>`;
+        } else {
+            for (const acct of data.accounts) {
+                html += `<h3 style="margin:12px 0 4px; font-size:12px; color:var(--qb-navy);">${escapeHtml(acct.account_number)} — ${escapeHtml(acct.account_name)}</h3>`;
+                html += `<div class="table-container"><table>
+                    <thead><tr><th>Date</th><th>Description</th><th>Reference</th><th class="amount">Debit</th><th class="amount">Credit</th></tr></thead><tbody>`;
+                for (const e of acct.entries) {
+                    html += `<tr>
+                        <td>${formatDate(e.date)}</td>
+                        <td>${escapeHtml(e.description)}</td>
+                        <td>${escapeHtml(e.reference)}</td>
+                        <td class="amount">${e.debit > 0 ? formatCurrency(e.debit) : ''}</td>
+                        <td class="amount">${e.credit > 0 ? formatCurrency(e.credit) : ''}</td>
+                    </tr>`;
+                }
+                html += `<tr style="font-weight:600; background:var(--gray-50);">
+                    <td colspan="3">Total</td>
+                    <td class="amount">${formatCurrency(acct.total_debit)}</td>
+                    <td class="amount">${formatCurrency(acct.total_credit)}</td>
+                </tr></tbody></table></div>`;
+            }
+        }
+        html += `<div class="form-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`;
+        openModal('General Ledger', html);
+    },
+
+    async incomeByCustomer() {
+        const thisYear = new Date().getFullYear();
+        const start = `${thisYear}-01-01`;
+        const end = todayISO();
+        const data = await API.get(`/reports/income-by-customer?start_date=${start}&end_date=${end}`);
+
+        let rows = data.items.map(i =>
+            `<tr>
+                <td>${escapeHtml(i.customer_name)}</td>
+                <td class="amount">${i.invoice_count}</td>
+                <td class="amount">${formatCurrency(i.total_sales)}</td>
+                <td class="amount">${formatCurrency(i.total_paid)}</td>
+                <td class="amount">${formatCurrency(i.total_balance)}</td>
+            </tr>`
+        ).join('');
+
+        rows += `<tr style="font-weight:700; background:var(--gray-50);">
+            <td>TOTAL</td>
+            <td class="amount">${data.items.reduce((s,i) => s+i.invoice_count, 0)}</td>
+            <td class="amount">${formatCurrency(data.total_sales)}</td>
+            <td class="amount">${formatCurrency(data.total_paid)}</td>
+            <td class="amount">${formatCurrency(data.total_balance)}</td>
+        </tr>`;
+
+        openModal('Income by Customer', `
+            <p style="margin-bottom:12px; color:var(--gray-500);">${formatDate(data.start_date)} &mdash; ${formatDate(data.end_date)}</p>
+            <div class="table-container"><table>
+                <thead><tr><th>Customer</th><th class="amount">Invoices</th><th class="amount">Sales</th><th class="amount">Paid</th><th class="amount">Balance</th></tr></thead>
+                <tbody>${rows || '<tr><td colspan="5" style="text-align:center; color:var(--gray-400);">No sales data</td></tr>'}</tbody>
+            </table></div>
+            <div class="form-actions"><button class="btn btn-secondary" onclick="closeModal()">Close</button></div>`);
+    },
+
+    async customerStatementPicker() {
+        const customers = await API.get('/customers?active_only=true');
+        const custOpts = customers.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+        openModal('Customer Statement', `
+            <form onsubmit="ReportsPage.openStatement(event)">
+                <div class="form-grid">
+                    <div class="form-group"><label>Customer *</label>
+                        <select name="customer_id" required><option value="">Select...</option>${custOpts}</select></div>
+                    <div class="form-group"><label>As of Date</label>
+                        <input name="as_of_date" type="date" value="${todayISO()}"></div>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Generate PDF</button>
+                </div>
+            </form>`);
+    },
+
+    openStatement(e) {
+        e.preventDefault();
+        const form = e.target;
+        const cid = form.customer_id.value;
+        const asOf = form.as_of_date.value || todayISO();
+        window.open(`/api/reports/customer-statement/${cid}/pdf?as_of_date=${asOf}`, '_blank');
+        closeModal();
     },
 
     async arAging() {
