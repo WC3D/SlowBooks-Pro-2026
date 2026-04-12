@@ -119,6 +119,7 @@ def ar_aging(as_of_date: date = Query(default=None), db: Session = Depends(get_d
     invoices = (
         db.query(Invoice)
         .filter(Invoice.status.in_([InvoiceStatus.SENT, InvoiceStatus.PARTIAL]))
+        .filter(Invoice.date <= as_of_date)
         .filter(Invoice.balance_due > 0)
         .all()
     )
