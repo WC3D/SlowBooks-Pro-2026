@@ -6,7 +6,9 @@ Free and open source. Runs on Linux and Windows. No Intuit activation servers re
 
 ![Slowbooks Pro 2026 — Splash Screen](screenshots/splash.png)
 
-![Slowbooks Pro 2026 — Dashboard](screenshots/dashboard.png)
+![Slowbooks Pro 2026 — Dashboard (Light Mode)](screenshots/dashboard-light.png)
+
+![Slowbooks Pro 2026 — Dashboard (Dark Mode)](screenshots/dashboard-dark.png)
 
 ![Slowbooks Pro 2026 — Invoices with IRS Pub 583 Mock Data](screenshots/invoices.png)
 
