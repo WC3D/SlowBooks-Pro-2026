@@ -84,8 +84,14 @@ The codebase is annotated with "decompilation" comments referencing `QBW32.EXE` 
 - Recent invoices and payments tables
 - Bank balances at a glance
 
+### Online Payments
+- **Stripe Checkout** — Accept online payments via Stripe's hosted checkout page. Customers click "Pay Online" in emailed invoices, pay on Stripe, and the payment auto-records with journal entries (DR Undeposited Funds, CR A/R)
+- **Public Payment Page** — Standalone `/pay/{token}` page (no login required) shows invoice summary with "Pay with Stripe" button. Supports light/dark mode
+- **Copy Payment Link** — One-click copy of the public payment URL from the invoice view modal
+- **Webhook Handler** — Idempotent Stripe webhook processes `checkout.session.completed` events with signature verification
+
 ### Communication & Export
-- **Invoice Email** — Send invoices as PDF attachments via SMTP with configurable email settings
+- **Invoice Email** — Send invoices as PDF attachments via SMTP with configurable email settings. Includes "Pay Online" button when Stripe is enabled
 - **CSV Import/Export** — Import/export customers, vendors, items, invoices, and chart of accounts as CSV
 - **Print-Optimized PDF** — Enhanced invoice PDF template with company logo support
 - **IIF Import/Export** — Full QuickBooks 2003 Pro interoperability (see below)
@@ -122,12 +128,13 @@ The codebase is annotated with "decompilation" comments referencing `QBW32.EXE` 
 
 | Component | Technology |
 |-----------|-----------|
-| Backend | Python 3.12 + FastAPI |
+| Backend | Python 3.12 + FastAPI (30 routers, 140+ routes) |
 | Database | PostgreSQL 16 + SQLAlchemy 2.0 |
 | Migrations | Alembic |
 | Frontend | Vanilla HTML/CSS/JS (no framework) |
 | PDF | WeasyPrint 60.2 + Jinja2 |
 | Bank Import | ofxparse (OFX/QFX) |
+| Payments | Stripe Checkout (hosted) |
 | Port | 3001 |
 
 ---
@@ -225,7 +232,8 @@ SlowBooks-Pro-2026/
 │   │   ├── company_service.py # Multi-company DB management
 │   │   ├── iif_export.py     # IIF export (8 export functions)
 │   │   ├── iif_import.py     # IIF parser + import + validation
-│   │   └── pdf_service.py    # WeasyPrint PDF generation
+│   │   ├── pdf_service.py    # WeasyPrint PDF generation
+│   │   └── stripe_service.py # Stripe Checkout + webhook verification
 │   ├── templates/            # Jinja2 templates (PDF, email)
 │   ├── seed/                 # Chart of Accounts seed data
 │   └── static/
@@ -364,6 +372,14 @@ All endpoints under `/api/`. Swagger docs at `/docs`. 132 routes across 28 route
 | `/api/csv/import/{type}` | POST | Import CSV file |
 | `/api/bank-import/preview` | POST | Preview OFX/QFX transactions |
 | `/api/bank-import/import/{id}` | POST | Import OFX/QFX into bank account |
+
+### Online Payments
+| Endpoint | Methods | Description |
+|----------|---------|-------------|
+| `/pay/{token}` | GET | Public payment page (no auth) |
+| `/api/stripe/create-checkout-session` | POST | Create Stripe Checkout session |
+| `/api/stripe/webhook` | POST | Stripe webhook handler |
+| `/api/stripe/payment-link/{id}` | GET | Get public payment URL for invoice |
 
 ### System
 | Endpoint | Methods | Description |
