@@ -42,7 +42,8 @@ const VendorsPage = {
     async showForm(id = null) {
         let v = { name:'', company:'', email:'', phone:'', fax:'', website:'',
             address1:'', address2:'', city:'', state:'', zip:'',
-            terms:'Net 30', tax_id:'', account_number:'', default_expense_account_id:'', notes:'' };
+            terms:'Net 30', tax_id:'', account_number:'', default_expense_account_id:'',
+            is_1099_vendor:false, vendor_1099_type:'', notes:'' };
         if (id) v = await API.get(`/vendors/${id}`);
 
         const accounts = await API.get('/accounts?account_type=expense');
@@ -89,6 +90,19 @@ const VendorsPage = {
                         <input name="account_number" value="${escapeHtml(v.account_number || '')}"></div>
                     <div class="form-group"><label>Default Expense Account</label>
                         <select name="default_expense_account_id"><option value="">-- None --</option>${acctOpts}</select></div>
+                    <div class="form-group"><label>1099 Vendor</label>
+                        <select name="is_1099_vendor">
+                            <option value="false" ${!v.is_1099_vendor ? 'selected' : ''}>No</option>
+                            <option value="true" ${v.is_1099_vendor ? 'selected' : ''}>Yes</option>
+                        </select></div>
+                    <div class="form-group"><label>1099 Type</label>
+                        <select name="vendor_1099_type">
+                            <option value="" ${!v.vendor_1099_type ? 'selected' : ''}>-- None --</option>
+                            <option value="NEC" ${v.vendor_1099_type==='NEC' ? 'selected' : ''}>NEC (Non-Employee Comp)</option>
+                            <option value="MISC" ${v.vendor_1099_type==='MISC' ? 'selected' : ''}>MISC</option>
+                            <option value="INT" ${v.vendor_1099_type==='INT' ? 'selected' : ''}>INT (Interest)</option>
+                            <option value="DIV" ${v.vendor_1099_type==='DIV' ? 'selected' : ''}>DIV (Dividends)</option>
+                        </select></div>
                     <div class="form-group full-width"><label>Notes</label>
                         <textarea name="notes">${escapeHtml(v.notes || '')}</textarea></div>
                 </div>
@@ -103,6 +117,8 @@ const VendorsPage = {
         e.preventDefault();
         const data = Object.fromEntries(new FormData(e.target).entries());
         data.default_expense_account_id = data.default_expense_account_id ? parseInt(data.default_expense_account_id) : null;
+        data.is_1099_vendor = data.is_1099_vendor === 'true';
+        data.vendor_1099_type = data.vendor_1099_type || null;
         try {
             if (id) { await API.put(`/vendors/${id}`, data); toast('Vendor updated'); }
             else { await API.post('/vendors', data); toast('Vendor created'); }

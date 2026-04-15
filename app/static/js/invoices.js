@@ -88,6 +88,12 @@ const InvoicesPage = {
                 <div class="total-row grand-total"><span class="label">Balance Due</span><span class="value">${formatCurrency(inv.balance_due)}</span></div>
             </div>
             ${inv.notes ? `<p style="margin-top:12px;color:var(--gray-500);">${escapeHtml(inv.notes)}</p>` : ''}
+            <div style="margin-top:16px; border-top:1px solid var(--gray-200); padding-top:12px;">
+                <h3 style="font-size:13px; margin-bottom:8px;">Attachments</h3>
+                <div id="inv-attachments-list" style="margin-bottom:8px; font-size:11px;">Loading...</div>
+                <input type="file" id="inv-attach-file" style="font-size:11px;">
+                <button class="btn btn-sm btn-secondary" onclick="InvoicesPage.uploadAttachment(${inv.id})" style="margin-left:4px;">Upload</button>
+            </div>
             <div class="form-actions">
                 <button class="btn btn-secondary" onclick="window.open('/api/invoices/${inv.id}/pdf','_blank')">Save PDF</button>
                 <button class="btn btn-secondary" onclick="window.open('/api/invoices/${inv.id}/print-preview','_blank')">Print</button>
@@ -98,6 +104,7 @@ const InvoicesPage = {
                 ${inv.status !== 'void' ? `<button class="btn btn-danger" onclick="InvoicesPage.void(${inv.id})">Void Invoice</button>` : ''}
                 <button class="btn btn-secondary" onclick="closeModal()">Close</button>
             </div>`);
+        InvoicesPage.loadAttachments('invoice', inv.id);
     },
 
     async void(id) {
@@ -374,6 +381,48 @@ const InvoicesPage = {
             else { await API.post('/invoices', data); toast('Invoice created'); }
             closeModal();
             App.navigate(location.hash);
+        } catch (err) { toast(err.message, 'error'); }
+    },
+
+    async loadAttachments(entityType, entityId) {
+        const el = $('#inv-attachments-list');
+        if (!el) return;
+        try {
+            const attachments = await API.get(`/attachments/${entityType}/${entityId}`);
+            if (attachments.length === 0) {
+                el.innerHTML = '<span style="color:var(--text-muted);">No attachments</span>';
+            } else {
+                el.innerHTML = attachments.map(a =>
+                    `<div style="display:flex; align-items:center; gap:8px; padding:2px 0;">
+                        <a href="/api/attachments/download/${a.id}" target="_blank">${escapeHtml(a.filename)}</a>
+                        <span style="color:var(--gray-400);">(${(a.file_size/1024).toFixed(1)} KB)</span>
+                        <button class="btn btn-sm btn-danger" onclick="InvoicesPage.deleteAttachment(${a.id},'${entityType}',${entityId})" style="padding:0 4px; font-size:10px;">X</button>
+                    </div>`
+                ).join('');
+            }
+        } catch (e) { el.innerHTML = ''; }
+    },
+
+    async uploadAttachment(entityId) {
+        const fileInput = $('#inv-attach-file');
+        if (!fileInput?.files[0]) { toast('Select a file first', 'error'); return; }
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        try {
+            const resp = await fetch(`/api/attachments/invoice/${entityId}`, { method: 'POST', body: formData });
+            if (!resp.ok) { const d = await resp.json(); throw new Error(d.detail || 'Upload failed'); }
+            toast('Attachment uploaded');
+            fileInput.value = '';
+            InvoicesPage.loadAttachments('invoice', entityId);
+        } catch (err) { toast(err.message, 'error'); }
+    },
+
+    async deleteAttachment(attachId, entityType, entityId) {
+        if (!confirm('Delete this attachment?')) return;
+        try {
+            await API.del(`/attachments/${attachId}`);
+            toast('Attachment deleted');
+            InvoicesPage.loadAttachments(entityType, entityId);
         } catch (err) { toast(err.message, 'error'); }
     },
 };

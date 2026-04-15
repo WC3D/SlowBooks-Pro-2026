@@ -44,6 +44,8 @@ from app.routes import stripe_payments, public
 from app.routes import qbo
 # Phase 9: Forum Bug Fixes & Missing Features
 from app.routes import journal, deposits, cc_charges, checks
+# Phase 10: Quick Wins + Medium Effort Features
+from app.routes import bank_rules, budgets, attachments, email_templates
 
 from app.database import SessionLocal
 from app.services.audit import register_audit_hooks
@@ -104,6 +106,11 @@ app.include_router(journal.router)
 app.include_router(deposits.router)
 app.include_router(cc_charges.router)
 app.include_router(checks.router)
+# Phase 10: Quick Wins + Medium Effort Features
+app.include_router(bank_rules.router)
+app.include_router(budgets.router)
+app.include_router(attachments.router)
+app.include_router(email_templates.router)
 
 # Register audit log hooks
 register_audit_hooks(SessionLocal)

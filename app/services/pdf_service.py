@@ -95,6 +95,16 @@ def _amount_to_words(amount) -> str:
     return f"{_int_to_words(dollars)} and {cents:02d}/100"
 
 
+def generate_collection_letter_pdf(customer, invoices, company_settings: dict, letter_type: str, total_due) -> bytes:
+    from datetime import date as _date
+    template = _jinja_env.get_template("collection_letter.html")
+    html_str = template.render(
+        customer=customer, invoices=invoices, company=company_settings,
+        letter_type=letter_type, total_due=total_due, today=_date.today(),
+    )
+    return HTML(string=html_str).write_pdf()
+
+
 def generate_check_pdf(check_data: dict, company_settings: dict) -> bytes:
     template = _jinja_env.get_template("check_pdf.html")
     check_data["amount_words"] = _amount_to_words(check_data.get("amount", 0))

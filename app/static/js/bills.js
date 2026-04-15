@@ -79,10 +79,17 @@ const BillsPage = {
                 <div class="total-row"><span class="label">Paid</span><span class="value">${formatCurrency(bill.amount_paid)}</span></div>
                 <div class="total-row grand-total"><span class="label">Balance</span><span class="value">${formatCurrency(bill.balance_due)}</span></div>
             </div>
+            <div style="margin-top:16px; border-top:1px solid var(--gray-200); padding-top:12px;">
+                <h3 style="font-size:13px; margin-bottom:8px;">Attachments</h3>
+                <div id="bill-attachments-list" style="margin-bottom:8px; font-size:11px;">Loading...</div>
+                <input type="file" id="bill-attach-file" style="font-size:11px;">
+                <button class="btn btn-sm btn-secondary" onclick="BillsPage.uploadAttachment(${bill.id})" style="margin-left:4px;">Upload</button>
+            </div>
             <div class="form-actions">
                 ${bill.status === 'paid' ? `<button class="btn btn-secondary" onclick="window.open('/api/bills/${bill.id}/pdf','_blank')">Save PDF</button>` : ''}
                 <button class="btn btn-secondary" onclick="closeModal()">Close</button>
             </div>`);
+        BillsPage.loadAttachments(bill.id);
     },
 
     _items: [],
@@ -291,6 +298,48 @@ const BillsPage = {
             toast('Bills paid');
             closeModal();
             App.navigate('#/bills');
+        } catch (err) { toast(err.message, 'error'); }
+    },
+
+    async loadAttachments(billId) {
+        const el = $('#bill-attachments-list');
+        if (!el) return;
+        try {
+            const attachments = await API.get(`/attachments/bill/${billId}`);
+            if (attachments.length === 0) {
+                el.innerHTML = '<span style="color:var(--text-muted);">No attachments</span>';
+            } else {
+                el.innerHTML = attachments.map(a =>
+                    `<div style="display:flex; align-items:center; gap:8px; padding:2px 0;">
+                        <a href="/api/attachments/download/${a.id}" target="_blank">${escapeHtml(a.filename)}</a>
+                        <span style="color:var(--gray-400);">(${(a.file_size/1024).toFixed(1)} KB)</span>
+                        <button class="btn btn-sm btn-danger" onclick="BillsPage.deleteAttachment(${a.id},${billId})" style="padding:0 4px; font-size:10px;">X</button>
+                    </div>`
+                ).join('');
+            }
+        } catch (e) { el.innerHTML = ''; }
+    },
+
+    async uploadAttachment(billId) {
+        const fileInput = $('#bill-attach-file');
+        if (!fileInput?.files[0]) { toast('Select a file first', 'error'); return; }
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        try {
+            const resp = await fetch(`/api/attachments/bill/${billId}`, { method: 'POST', body: formData });
+            if (!resp.ok) { const d = await resp.json(); throw new Error(d.detail || 'Upload failed'); }
+            toast('Attachment uploaded');
+            fileInput.value = '';
+            BillsPage.loadAttachments(billId);
+        } catch (err) { toast(err.message, 'error'); }
+    },
+
+    async deleteAttachment(attachId, billId) {
+        if (!confirm('Delete this attachment?')) return;
+        try {
+            await API.del(`/attachments/${attachId}`);
+            toast('Attachment deleted');
+            BillsPage.loadAttachments(billId);
         } catch (err) { toast(err.message, 'error'); }
     },
 };

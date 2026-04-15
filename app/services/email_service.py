@@ -89,6 +89,23 @@ def send_email(db: Session, to_email: str, subject: str, html_body: str,
         return False
 
 
+def render_template_from_db(db: Session, template_name: str, context: dict) -> tuple:
+    """Load template from DB, render with Jinja2 SandboxedEnvironment, fall back to file."""
+    from app.models.email_templates import EmailTemplate
+    from jinja2.sandbox import SandboxedEnvironment
+
+    tpl = db.query(EmailTemplate).filter(EmailTemplate.name == template_name).first()
+    if tpl:
+        env = SandboxedEnvironment()
+        from app.services.pdf_service import _format_currency, _format_date
+        env.filters["currency"] = _format_currency
+        env.filters["fdate"] = _format_date
+        subject = env.from_string(tpl.subject_template).render(**context)
+        body = env.from_string(tpl.body_template).render(**context)
+        return subject, body
+    return None, None
+
+
 def render_invoice_email(invoice, company_settings: dict, pay_url: str = None) -> str:
     """Render the invoice email HTML body."""
     try:

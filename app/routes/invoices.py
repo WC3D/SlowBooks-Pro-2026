@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func as sqlfunc
 
 from app.database import get_db
+from app.models.accounts import Account
 from app.models.invoices import Invoice, InvoiceLine, InvoiceStatus
 from app.models.items import Item
 from app.models.contacts import Customer
@@ -387,6 +388,77 @@ def email_invoice(invoice_id: int, data: dict, request: Request, db: Session = D
         db.add(log)
         db.commit()
         raise HTTPException(status_code=500, detail=f"Email failed: {str(e)}")
+
+
+@router.post("/apply-late-fees")
+def apply_late_fees(db: Session = Depends(get_db)):
+    """Apply late fees to overdue invoices past the grace period."""
+    from app.models.transactions import Transaction
+    settings_dict = get_settings(db)
+
+    if settings_dict.get("late_fee_enabled") != "true":
+        raise HTTPException(status_code=400, detail="Late fees are not enabled in settings")
+
+    rate = Decimal(settings_dict.get("late_fee_rate", "1.5")) / 100
+    grace_days = int(settings_dict.get("late_fee_grace_days", "15"))
+    today = date.today()
+
+    overdue = (
+        db.query(Invoice)
+        .filter(Invoice.status.in_([InvoiceStatus.SENT, InvoiceStatus.PARTIAL]))
+        .filter(Invoice.balance_due > 0)
+        .filter(Invoice.due_date <= today - timedelta(days=grace_days))
+        .all()
+    )
+
+    # Ensure Late Fee Income account exists (4800)
+    late_fee_account = db.query(Account).filter(Account.account_number == "4800").first()
+    if not late_fee_account:
+        from app.models.accounts import AccountType as AT
+        late_fee_account = Account(
+            name="Late Fee Income", account_number="4800",
+            account_type=AT.INCOME, is_system=False, balance=Decimal("0"),
+        )
+        db.add(late_fee_account)
+        db.flush()
+
+    ar_id = get_ar_account_id(db)
+    if not ar_id:
+        raise HTTPException(status_code=400, detail="Accounts Receivable (1100) not found")
+
+    applied = 0
+    for inv in overdue:
+        # Check if late fee already applied (look for journal entry with source_type=late_fee, source_id=inv.id)
+        existing = db.query(Transaction).filter(
+            Transaction.source_type == "late_fee",
+            Transaction.source_id == inv.id,
+        ).first()
+        if existing:
+            continue
+
+        fee_amount = (inv.balance_due * rate).quantize(Decimal("0.01"))
+        if fee_amount <= 0:
+            continue
+
+        # Create journal entry: DR A/R, CR Late Fee Income
+        journal_lines = [
+            {"account_id": ar_id, "debit": fee_amount, "credit": Decimal("0"),
+             "description": f"Late fee - Invoice #{inv.invoice_number}"},
+            {"account_id": late_fee_account.id, "debit": Decimal("0"), "credit": fee_amount,
+             "description": f"Late fee - Invoice #{inv.invoice_number}"},
+        ]
+        txn = create_journal_entry(
+            db, today, f"Late fee - Invoice #{inv.invoice_number}",
+            journal_lines, source_type="late_fee", source_id=inv.id,
+        )
+
+        # Update invoice totals
+        inv.total += fee_amount
+        inv.balance_due += fee_amount
+        applied += 1
+
+    db.commit()
+    return {"applied": applied, "total_overdue": len(overdue)}
 
 
 @router.post("/{invoice_id}/duplicate", response_model=InvoiceResponse, status_code=201)

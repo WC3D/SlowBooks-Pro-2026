@@ -77,6 +77,8 @@ class Vendor(Base):
     tax_id = Column(String(50), nullable=True)
     account_number = Column(String(50), nullable=True)
     default_expense_account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
+    is_1099_vendor = Column(Boolean, default=False)
+    vendor_1099_type = Column(String(10), nullable=True)
     notes = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True)
     balance = Column(Numeric(12, 2), default=0)

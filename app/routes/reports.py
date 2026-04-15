@@ -20,8 +20,8 @@ from app.models.accounts import Account, AccountType
 from app.models.transactions import Transaction, TransactionLine
 from app.models.invoices import Invoice, InvoiceStatus
 from app.models.payments import Payment
-from app.models.contacts import Customer
-from app.services.pdf_service import generate_statement_pdf
+from app.models.contacts import Customer, Vendor
+from app.services.pdf_service import generate_statement_pdf, generate_collection_letter_pdf
 from app.routes.settings import _get_all as get_settings
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
@@ -486,3 +486,321 @@ def customer_statement_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f"inline; filename=Statement_{customer.name}.pdf"},
     )
+
+
+# ============================================================================
+# Phase 10: Quick Wins — Trial Balance, Cash Flow, Batch Email,
+#            Collection Letters, 1099 Summary
+# ============================================================================
+
+@router.get("/trial-balance")
+def trial_balance(
+    start_date: date = Query(default=None),
+    end_date: date = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Trial Balance: sum all debits/credits per account for a date range."""
+    if not start_date:
+        start_date = date(date.today().year, 1, 1)
+    if not end_date:
+        end_date = date.today()
+
+    results = (
+        db.query(
+            Account.id, Account.account_number, Account.name, Account.account_type,
+            sqlfunc.coalesce(sqlfunc.sum(TransactionLine.debit), 0),
+            sqlfunc.coalesce(sqlfunc.sum(TransactionLine.credit), 0),
+        )
+        .join(TransactionLine, TransactionLine.account_id == Account.id)
+        .join(Transaction, TransactionLine.transaction_id == Transaction.id)
+        .filter(Transaction.date >= start_date, Transaction.date <= end_date)
+        .group_by(Account.id, Account.account_number, Account.name, Account.account_type)
+        .order_by(Account.account_number)
+        .all()
+    )
+
+    items = []
+    total_debit = Decimal(0)
+    total_credit = Decimal(0)
+    for acct_id, acct_num, acct_name, acct_type, debit, credit in results:
+        total_debit += debit
+        total_credit += credit
+        items.append({
+            "account_id": acct_id,
+            "account_number": acct_num or "",
+            "account_name": acct_name,
+            "account_type": acct_type.value,
+            "total_debit": float(debit),
+            "total_credit": float(credit),
+            "net_balance": float(debit - credit),
+        })
+
+    return {
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "items": items,
+        "total_debit": float(total_debit),
+        "total_credit": float(total_credit),
+        "difference": float(total_debit - total_credit),
+    }
+
+
+@router.get("/cash-flow")
+def cash_flow(
+    start_date: date = Query(default=None),
+    end_date: date = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Cash Flow Statement: Operating, Investing, Financing sections."""
+    if not start_date:
+        start_date = date(date.today().year, 1, 1)
+    if not end_date:
+        end_date = date.today()
+
+    # Map account types to cash flow sections
+    section_map = {
+        AccountType.INCOME: "operating",
+        AccountType.EXPENSE: "operating",
+        AccountType.COGS: "operating",
+        AccountType.ASSET: "investing",
+        AccountType.LIABILITY: "financing",
+        AccountType.EQUITY: "financing",
+    }
+
+    results = (
+        db.query(
+            Account.name, Account.account_number, Account.account_type,
+            sqlfunc.coalesce(sqlfunc.sum(TransactionLine.credit - TransactionLine.debit), 0),
+        )
+        .join(TransactionLine, TransactionLine.account_id == Account.id)
+        .join(Transaction, TransactionLine.transaction_id == Transaction.id)
+        .filter(Transaction.date >= start_date, Transaction.date <= end_date)
+        .group_by(Account.id, Account.name, Account.account_number, Account.account_type)
+        .order_by(Account.account_number)
+        .all()
+    )
+
+    sections = {"operating": [], "investing": [], "financing": []}
+    totals = {"operating": Decimal(0), "investing": Decimal(0), "financing": Decimal(0)}
+
+    for acct_name, acct_num, acct_type, net_change in results:
+        section = section_map.get(acct_type, "operating")
+        amount = float(net_change)
+        # For investing (assets), net cash flow is negative of net change
+        # (buying assets = cash outflow)
+        if section == "investing":
+            amount = -amount
+        sections[section].append({
+            "account_name": acct_name,
+            "account_number": acct_num or "",
+            "amount": amount,
+        })
+        totals[section] += Decimal(str(amount))
+
+    net_change = totals["operating"] + totals["investing"] + totals["financing"]
+
+    return {
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "operating": sections["operating"],
+        "investing": sections["investing"],
+        "financing": sections["financing"],
+        "total_operating": float(totals["operating"]),
+        "total_investing": float(totals["investing"]),
+        "total_financing": float(totals["financing"]),
+        "net_change": float(net_change),
+    }
+
+
+@router.post("/batch-email-statements")
+def batch_email_statements(db: Session = Depends(get_db)):
+    """Email statements to all customers with overdue invoices."""
+    from app.services.email_service import send_email
+
+    settings = get_settings(db)
+    as_of_date = date.today()
+
+    overdue_invoices = (
+        db.query(Invoice)
+        .filter(Invoice.status.in_([InvoiceStatus.SENT, InvoiceStatus.PARTIAL]))
+        .filter(Invoice.balance_due > 0)
+        .filter(Invoice.due_date < as_of_date)
+        .all()
+    )
+
+    # Group by customer
+    by_customer = {}
+    for inv in overdue_invoices:
+        by_customer.setdefault(inv.customer_id, []).append(inv)
+
+    sent = 0
+    failed = 0
+    errors = []
+
+    for cid, invs in by_customer.items():
+        customer = db.query(Customer).filter(Customer.id == cid).first()
+        if not customer or not customer.email:
+            errors.append(f"Customer {customer.name if customer else cid}: no email address")
+            failed += 1
+            continue
+
+        try:
+            payments = (
+                db.query(Payment)
+                .filter(Payment.customer_id == cid)
+                .filter(Payment.date <= as_of_date)
+                .order_by(Payment.date)
+                .all()
+            )
+            all_invoices = (
+                db.query(Invoice)
+                .filter(Invoice.customer_id == cid)
+                .filter(Invoice.status != InvoiceStatus.VOID)
+                .filter(Invoice.date <= as_of_date)
+                .order_by(Invoice.date)
+                .all()
+            )
+
+            pdf_bytes = generate_statement_pdf(customer, all_invoices, payments, settings, as_of_date)
+
+            send_email(
+                db=db,
+                to_email=customer.email,
+                subject=f"Account Statement — {settings.get('company_name', 'Our Company')}",
+                html_body=f"<p>Dear {customer.name},</p><p>Please find your account statement attached.</p><p>{settings.get('company_name', '')}</p>",
+                attachment_bytes=pdf_bytes,
+                attachment_name=f"Statement_{customer.name}.pdf",
+                entity_type="statement",
+                entity_id=cid,
+            )
+            sent += 1
+        except Exception as e:
+            errors.append(f"Customer {customer.name}: {str(e)}")
+            failed += 1
+
+    return {"sent": sent, "failed": failed, "errors": errors}
+
+
+@router.post("/collection-letters")
+def collection_letters(data: dict, db: Session = Depends(get_db)):
+    """Generate and optionally email collection letters."""
+    from app.services.email_service import send_email
+
+    letter_type = str(data.get("letter_type", "30"))
+    customer_ids = data.get("customer_ids")
+    send_email_flag = data.get("send_email", False)
+    settings = get_settings(db)
+    today = date.today()
+
+    # Map letter type to minimum days overdue
+    min_days = {"30": 30, "60": 60, "90": 90}.get(letter_type, 30)
+
+    q = (
+        db.query(Invoice)
+        .filter(Invoice.status.in_([InvoiceStatus.SENT, InvoiceStatus.PARTIAL]))
+        .filter(Invoice.balance_due > 0)
+        .filter(Invoice.due_date <= today - timedelta(days=min_days))
+    )
+    if customer_ids:
+        q = q.filter(Invoice.customer_id.in_(customer_ids))
+
+    overdue_invoices = q.all()
+
+    # Group by customer
+    by_customer = {}
+    for inv in overdue_invoices:
+        by_customer.setdefault(inv.customer_id, []).append(inv)
+
+    generated = 0
+    emailed = 0
+    errors = []
+    pdfs = []
+
+    for cid, invs in by_customer.items():
+        customer = db.query(Customer).filter(Customer.id == cid).first()
+        if not customer:
+            continue
+
+        # Add days_overdue to each invoice for the template
+        for inv in invs:
+            inv.days_overdue = (today - inv.due_date).days if inv.due_date else 0
+
+        total_due = sum(float(inv.balance_due) for inv in invs)
+
+        try:
+            pdf_bytes = generate_collection_letter_pdf(
+                customer, invs, settings, letter_type, total_due
+            )
+            generated += 1
+
+            if send_email_flag and customer.email:
+                type_labels = {"30": "Payment Reminder", "60": "Second Notice", "90": "Final Notice"}
+                send_email(
+                    db=db,
+                    to_email=customer.email,
+                    subject=f"{type_labels.get(letter_type, 'Collection Notice')} — {settings.get('company_name', '')}",
+                    html_body=f"<p>Dear {customer.name},</p><p>Please see the attached collection notice regarding your outstanding balance of ${total_due:,.2f}.</p>",
+                    attachment_bytes=pdf_bytes,
+                    attachment_name=f"Collection_{letter_type}day_{customer.name}.pdf",
+                    entity_type="collection",
+                    entity_id=cid,
+                )
+                emailed += 1
+        except Exception as e:
+            errors.append(f"{customer.name}: {str(e)}")
+
+    return {"generated": generated, "emailed": emailed, "errors": errors}
+
+
+@router.get("/1099-summary")
+def report_1099_summary(
+    year: int = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """1099 Summary: total payments to 1099 vendors for a year."""
+    if not year:
+        year = date.today().year
+
+    from app.models.bills import Bill, BillPayment, BillPaymentAllocation
+
+    vendors_1099 = db.query(Vendor).filter(Vendor.is_1099_vendor == True).all()
+    if not vendors_1099:
+        return {"year": year, "items": [], "total": 0, "vendors_above_threshold": 0}
+
+    items = []
+    total = Decimal(0)
+    above_threshold = 0
+
+    for vendor in vendors_1099:
+        # Sum all bill payment allocations for this vendor in the year
+        vendor_total = (
+            db.query(sqlfunc.coalesce(sqlfunc.sum(BillPaymentAllocation.amount), 0))
+            .join(BillPayment, BillPaymentAllocation.bill_payment_id == BillPayment.id)
+            .filter(BillPayment.vendor_id == vendor.id)
+            .filter(sqlfunc.extract("year", BillPayment.date) == year)
+            .scalar()
+        )
+        vendor_total = Decimal(str(vendor_total or 0))
+        total += vendor_total
+        flagged = vendor_total >= 600
+        if flagged:
+            above_threshold += 1
+
+        items.append({
+            "vendor_id": vendor.id,
+            "vendor_name": vendor.name,
+            "tax_id": vendor.tax_id or "",
+            "vendor_1099_type": vendor.vendor_1099_type or "NEC",
+            "total_paid": float(vendor_total),
+            "above_threshold": flagged,
+        })
+
+    items.sort(key=lambda x: x["total_paid"], reverse=True)
+
+    return {
+        "year": year,
+        "items": items,
+        "total": float(total),
+        "vendors_above_threshold": above_threshold,
+        "threshold": 600.0,
+    }
