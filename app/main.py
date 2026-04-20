@@ -47,6 +47,7 @@ from app.routes import journal, deposits, cc_charges, checks
 # Phase 10: Quick Wins + Medium Effort Features
 from app.routes import bank_rules, budgets, attachments, email_templates
 
+from app.config import CORS_ALLOW_ORIGINS
 from app.database import SessionLocal
 from app.services.audit import register_audit_hooks
 
@@ -54,7 +55,7 @@ app = FastAPI(title="Slowbooks Pro 2026", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOW_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
